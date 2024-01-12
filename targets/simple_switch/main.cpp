@@ -29,16 +29,28 @@
 
 #include "simple_switch.h"
 
+#include <csignal> //@amjall For handling SIGTERM from Mininet
+#include <atomic> //@amjll for the signal flag
+
 namespace {
 SimpleSwitch *simple_switch;
 }  // namespace
+
 
 namespace sswitch_runtime {
 shared_ptr<SimpleSwitchIf> get_handler(SimpleSwitch *sw);
 }  // namespace sswitch_runtime
 
+std::atomic<bool> sigterm_flag(false);
+// @amjall Added to handle the SIGTERMs sent by Mininet 
+// at the end of the simulations
+void sigterm_handler(int signum){
+	sigterm_flag.store(true);
+}
+
 int
 main(int argc, char* argv[]) {
+  signal(SIGTERM, sigterm_handler);
   bm::TargetParserBasicWithDynModules simple_switch_parser;
   simple_switch_parser.add_flag_option(
       "enable-swap",
@@ -91,8 +103,8 @@ main(int argc, char* argv[]) {
   bm_runtime::add_service<SimpleSwitchIf, SimpleSwitchProcessor>(
       "simple_switch", sswitch_runtime::get_handler(simple_switch));
   simple_switch->start_and_return();
-
-  while (true) std::this_thread::sleep_for(std::chrono::seconds(100));
-
+  while (!sigterm_flag.load())
+	  std::this_thread::sleep_for(std::chrono::seconds(5));
+  simple_switch->write_micro_logs();
   return 0;
 }
