@@ -33,6 +33,8 @@
 #include <thread>
 #include <vector>
 #include <functional>
+#include <list> //@amjall for my log list
+#include <fstream> //@amjall to wirte to the micro log file
 
 // TODO(antonin)
 // experimental support for priority queueing
@@ -126,6 +128,8 @@ class SimpleSwitch : public Switch {
 
   void set_transmit_fn(TransmitFn fn);
 
+  void write_micro_logs();
+
   port_t get_drop_port() const {
     return drop_port;
   }
@@ -198,6 +202,9 @@ class SimpleSwitch : public Switch {
   clock::time_point start;
   bool with_queueing_metadata{false};
   std::unique_ptr<MirroringSessions> mirroring_sessions;
+  //@amjall the log list that will be written to a file at the end
+  std::list<std::string> microLogs;
+  std::ofstream microLogFile;
 };
 
 #endif  // SIMPLE_SWITCH_SIMPLE_SWITCH_H_
