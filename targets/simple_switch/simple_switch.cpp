@@ -35,6 +35,11 @@
 #include <unordered_map>
 #include <utility>
 
+#include <sstream> //@amjall to convert numbers to strings
+#include <pthread.h>
+
+#include <sys/time.h>
+
 #include "simple_switch.h"
 #include "register_access.h"
 
@@ -70,6 +75,7 @@ struct bmv2_hash {
 REGISTER_HASH(hash_ex);
 REGISTER_HASH(bmv2_hash);
 
+std::mutex logMutex;
 extern int import_primitives(SimpleSwitch *simple_switch);
 
 packet_id_t SimpleSwitch::packet_id = 0;
@@ -149,6 +155,10 @@ class SimpleSwitch::InputBuffer {
     }
     _BM_UNREACHABLE("Unreachable statement");
     return 0;
+  }
+
+  size_t size(){
+	return queue_lo.size();
   }
 
   void pop_back(std::unique_ptr<Packet> *pItem) {
@@ -267,18 +277,32 @@ SimpleSwitch::receive_(port_t port_num, const char *buffer, int len) {
 
   input_buffer->push_front(
       InputBuffer::PacketType::NORMAL, std::move(packet));
+  
   return 0;
+}
+
+void set_thread_priority(std::thread &th, int policy, int priority){
+	sched_param sch_params;
+	sch_params.sched_priority = priority;
+    pthread_setschedparam(th.native_handle(), policy, &sch_params);
 }
 
 void
 SimpleSwitch::start_and_return_() {
   check_queueing_metadata();
-
-  threads_.push_back(std::thread(&SimpleSwitch::ingress_thread, this));
+  BMLOG_DEBUG("nb_egress_threads {}", nb_egress_threads);
+  std::thread ingress_th = std::thread(&SimpleSwitch::ingress_thread, this);
+  set_thread_priority(ingress_th, SCHED_FIFO, 90);
+  threads_.push_back(std::move(ingress_th));
   for (size_t i = 0; i < nb_egress_threads; i++) {
-    threads_.push_back(std::thread(&SimpleSwitch::egress_thread, this, i));
+		std::thread egress_th = std::thread(&SimpleSwitch::egress_thread, this, i);
+	  	set_thread_priority(egress_th, SCHED_FIFO, 90);
+		threads_.push_back(std::move(egress_th));
+	
   }
-  threads_.push_back(std::thread(&SimpleSwitch::transmit_thread, this));
+  std::thread transmit_th = std::thread(&SimpleSwitch::transmit_thread, this);
+  set_thread_priority(transmit_th, SCHED_FIFO, 90);
+  threads_.push_back(std::move(transmit_th));
 }
 
 void
@@ -302,6 +326,20 @@ SimpleSwitch::~SimpleSwitch() {
   for (auto& thread_ : threads_) {
     thread_.join();
   }
+}
+
+void 
+SimpleSwitch::write_micro_logs(){
+  // @amjall I will write the micro logs to a file named with the process ID
+  pid_t pid = getpid();  
+  std::ostringstream filenameStream;
+  filenameStream << "/tmp/" << pid;
+  std::string filename = filenameStream.str();
+  microLogFile.open(filename, std::ofstream::out);
+  for (const auto& str: microLogs){
+	  microLogFile << str << '\n';
+  }
+  microLogFile.close();
 }
 
 void
@@ -421,6 +459,15 @@ SimpleSwitch::enqueue(port_t egress_port, std::unique_ptr<Packet> &&packet) {
     egress_buffers.push_front(
         egress_port, nb_queues_per_port - 1 - priority,
         std::move(packet));
+	//@amjall Add queue size to log lines
+	size_t egress_buffer_size = egress_buffers.size(egress_port); 
+	std::ostringstream logLineStream;
+	auto timestamp = std::chrono::high_resolution_clock::now().time_since_epoch();
+	logLineStream << duration_cast<std::chrono::microseconds>(timestamp).count() << " enq " << egress_buffer_size << " " << egress_port;
+	std::string line = logLineStream.str();
+	logMutex.lock();
+	microLogs.push_back(line);
+	logMutex.unlock();
 }
 
 // used for ingress cloning, resubmit
@@ -479,9 +526,11 @@ SimpleSwitch::ingress_thread() {
   PHV *phv;
 
   while (1) {
+
     std::unique_ptr<Packet> packet;
     input_buffer->pop_back(&packet);
-    if (packet == nullptr) break;
+    if (packet == nullptr)
+		break;
 
     // TODO(antonin): only update these if swapping actually happened?
     Parser *parser = this->get_parser("parser");
@@ -507,6 +556,7 @@ SimpleSwitch::ingress_thread() {
     const Packet::buffer_state_t packet_in_state = packet->save_buffer_state();
     parser->parse(packet.get());
 
+
     if (phv->has_field("standard_metadata.parser_error")) {
       phv->get_field("standard_metadata.parser_error").set(
           packet->get_error_code().get());
@@ -518,6 +568,7 @@ SimpleSwitch::ingress_thread() {
     }
 
     ingress_mau->apply(packet.get());
+
 
     packet->reset_exit();
 
@@ -629,7 +680,7 @@ SimpleSwitch::ingress_thread() {
     port_t egress_port = egress_spec;
     BMLOG_DEBUG_PKT(*packet, "Egress port is {}", egress_port);
 
-    if (egress_port == drop_port) {  // drop packet
+    if (egress_port == default_drop_port) {  // drop packet
       BMLOG_DEBUG_PKT(*packet, "Dropping packet at the end of ingress");
       continue;
     }
@@ -648,7 +699,27 @@ SimpleSwitch::egress_thread(size_t worker_id) {
     std::unique_ptr<Packet> packet;
     size_t port;
     size_t priority;
+	/*
+	std::ostringstream logLineStream;
+	auto timestamp = std::chrono::high_resolution_clock::now().time_since_epoch();
+	logLineStream << duration_cast<std::chrono::microseconds>(timestamp).count() << " wait start " << worker_id;
+	std::string line = logLineStream.str();
+	logMutex.lock();
+	microLogs.push_back(line);
+	logMutex.unlock();
+	*/
+
     egress_buffers.pop_back(worker_id, &port, &priority, &packet);
+
+	/*
+	logLineStream.str("");
+	timestamp = std::chrono::high_resolution_clock::now().time_since_epoch();
+	logLineStream << duration_cast<std::chrono::microseconds>(timestamp).count() << " wait end " << worker_id;
+	line = logLineStream.str();
+	logMutex.lock();
+	microLogs.push_back(line);
+	logMutex.unlock();
+	*/
     if (packet == nullptr) break;
 
     Deparser *deparser = this->get_deparser("deparser");
@@ -668,6 +739,15 @@ SimpleSwitch::egress_thread(size_t worker_id) {
           get_ts().count() - enq_timestamp);
       phv->get_field("queueing_metadata.deq_qdepth").set(
           egress_buffers.size(port));
+		//@amjall Add queue size to log lines
+		size_t egress_buffer_size = egress_buffers.size(port); 
+		std::ostringstream logLineStream;
+		auto timestamp = std::chrono::high_resolution_clock::now().time_since_epoch();
+		logLineStream << duration_cast<std::chrono::microseconds>(timestamp).count() << " deq " << egress_buffer_size << " " << port;
+		std::string line = logLineStream.str();
+		logMutex.lock();
+		microLogs.push_back(line);
+		logMutex.unlock();
       if (phv->has_field("queueing_metadata.qid")) {
         auto &qid_f = phv->get_field("queueing_metadata.qid");
         qid_f.set(nb_queues_per_port - 1 - priority);
@@ -685,6 +765,15 @@ SimpleSwitch::egress_thread(size_t worker_id) {
         packet->get_register(RegisterAccess::PACKET_LENGTH_REG_IDX));
 
     egress_mau->apply(packet.get());
+	/*
+	logLineStream.str("");
+	timestamp = std::chrono::high_resolution_clock::now().time_since_epoch();
+	logLineStream << duration_cast<std::chrono::microseconds>(timestamp).count() << " egress end " << worker_id;
+	line = logLineStream.str();
+	logMutex.lock();
+	microLogs.push_back(line);
+	logMutex.unlock();
+	*/
 
     auto clone_mirror_session_id =
         RegisterAccess::get_clone_mirror_session_id(packet.get());
