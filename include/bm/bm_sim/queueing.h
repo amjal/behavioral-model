@@ -568,13 +568,33 @@ class QueueingLogicPriRL {
   //! exceeded their rate already), the function will block.
   void pop_back(size_t worker_id, size_t *queue_id, size_t *priority,
                 T *pItem) {
-    LockType lock(mutex);
+	LockType lock(mutex);
     auto &w_info = workers_info.at(worker_id);
     MyQ *queue = nullptr;
     size_t pri;
     while (true) {
       if (w_info.size == 0) {
-        w_info.q_not_empty.wait(lock);
+		/*
+		lock.unlock();
+		auto spin_lock_start = std::chrono::steady_clock::now();
+		// @amjall first do a spin lock in a tight loop
+		while(std::chrono::steady_clock::now() - spin_lock_start < std::chrono::microseconds(100)){
+			lock.lock();
+			bool sentinel = w_info.size > 0;
+			lock.unlock();
+			if (sentinel)
+				break;
+		}
+		// @amjall then sleep
+		lock.lock();
+		if (w_info.size == 0){
+			// This already has about a 50us overhead for rescheduling the thread back to the core
+			//w_info.q_not_empty.wait_for(lock, std::chrono::microseconds(5));
+			// continue to check the condition one more time
+			continue;
+		}
+		*/
+		 w_info.q_not_empty.wait(lock);
       } else {
         auto now = clock::now();
         auto next = clock::time_point::max();
