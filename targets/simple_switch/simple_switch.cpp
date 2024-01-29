@@ -333,7 +333,7 @@ SimpleSwitch::write_micro_logs(){
   // @amjall I will write the micro logs to a file named with the process ID
   pid_t pid = getpid();  
   std::ostringstream filenameStream;
-  filenameStream << "/tmp/" << pid;
+  filenameStream << "/var/log/simple_switch/" << pid;
   std::string filename = filenameStream.str();
   microLogFile.open(filename, std::ofstream::out);
   for (const auto& str: microLogs){
