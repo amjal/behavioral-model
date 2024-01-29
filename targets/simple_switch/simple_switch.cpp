@@ -456,9 +456,6 @@ SimpleSwitch::enqueue(port_t egress_port, std::unique_ptr<Packet> &&packet) {
       bm::Logger::get()->error("Priority out of range, dropping packet");
       return;
     }
-    egress_buffers.push_front(
-        egress_port, nb_queues_per_port - 1 - priority,
-        std::move(packet));
 	//@amjall Add queue size to log lines
 	size_t egress_buffer_size = egress_buffers.size(egress_port); 
 	std::ostringstream logLineStream;
@@ -468,6 +465,9 @@ SimpleSwitch::enqueue(port_t egress_port, std::unique_ptr<Packet> &&packet) {
 	logMutex.lock();
 	microLogs.push_back(line);
 	logMutex.unlock();
+    egress_buffers.push_front(
+        egress_port, nb_queues_per_port - 1 - priority,
+        std::move(packet));
 }
 
 // used for ingress cloning, resubmit
@@ -682,6 +682,13 @@ SimpleSwitch::ingress_thread() {
 
     if (egress_port == default_drop_port) {  // drop packet
       BMLOG_DEBUG_PKT(*packet, "Dropping packet at the end of ingress");
+		std::ostringstream logLineStream;
+		auto timestamp = std::chrono::high_resolution_clock::now().time_since_epoch();
+		logLineStream << duration_cast<std::chrono::microseconds>(timestamp).count() << " drop"; 
+		std::string line = logLineStream.str();
+		logMutex.lock();
+		microLogs.push_back(line);
+		logMutex.unlock();
       continue;
     }
     auto &f_instance_type = phv->get_field("standard_metadata.instance_type");
@@ -820,6 +827,13 @@ SimpleSwitch::egress_thread(size_t worker_id) {
     port_t egress_spec = f_egress_spec.get_uint();
     if (egress_spec == drop_port) {  // drop packet
       BMLOG_DEBUG_PKT(*packet, "Dropping packet at the end of egress");
+		std::ostringstream logLineStream;
+		auto timestamp = std::chrono::high_resolution_clock::now().time_since_epoch();
+		logLineStream << duration_cast<std::chrono::microseconds>(timestamp).count() << " drop"; 
+		std::string line = logLineStream.str();
+		logMutex.lock();
+		microLogs.push_back(line);
+		logMutex.unlock();
       continue;
     }
 
