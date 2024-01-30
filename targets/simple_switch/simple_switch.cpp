@@ -274,6 +274,13 @@ SimpleSwitch::receive_(port_t port_num, const char *buffer, int len) {
     phv->get_field("intrinsic_metadata.ingress_global_timestamp")
         .set(get_ts().count());
   }
+	std::ostringstream logLineStream;
+	auto timestamp = std::chrono::high_resolution_clock::now().time_since_epoch();
+	logLineStream << duration_cast<std::chrono::microseconds>(timestamp).count() << " receive";
+	std::string line = logLineStream.str();
+	logMutex.lock();
+	microLogs.push_back(line);
+	logMutex.unlock();
 
   input_buffer->push_front(
       InputBuffer::PacketType::NORMAL, std::move(packet));
@@ -292,16 +299,16 @@ SimpleSwitch::start_and_return_() {
   check_queueing_metadata();
   BMLOG_DEBUG("nb_egress_threads {}", nb_egress_threads);
   std::thread ingress_th = std::thread(&SimpleSwitch::ingress_thread, this);
-  set_thread_priority(ingress_th, SCHED_FIFO, 90);
+  set_thread_priority(ingress_th, SCHED_FIFO, 49);
   threads_.push_back(std::move(ingress_th));
   for (size_t i = 0; i < nb_egress_threads; i++) {
 		std::thread egress_th = std::thread(&SimpleSwitch::egress_thread, this, i);
-	  	set_thread_priority(egress_th, SCHED_FIFO, 90);
+	  	set_thread_priority(egress_th, SCHED_FIFO, 48);
 		threads_.push_back(std::move(egress_th));
 	
   }
   std::thread transmit_th = std::thread(&SimpleSwitch::transmit_thread, this);
-  set_thread_priority(transmit_th, SCHED_FIFO, 90);
+  set_thread_priority(transmit_th, SCHED_FIFO, 49);
   threads_.push_back(std::move(transmit_th));
 }
 
